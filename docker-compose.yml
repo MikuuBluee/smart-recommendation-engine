@@ -1,0 +1,103 @@
+version: '3.8'
+
+services:
+  # Redis untuk caching recommendations
+  redis:
+    image: redis:7-alpine
+    container_name: recommender-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL dengan PGVector (opsional untuk vector search)
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: recommender-postgres
+    environment:
+      POSTGRES_USER: recommender
+      POSTGRES_PASSWORD: recommender123
+      POSTGRES_DB: recommendations
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recommender"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MLflow Tracking Server
+  mlflow:
+    image: python:3.9-slim
+    container_name: recommender-mlflow
+    working_dir: /app
+    command: >
+      bash -c "pip install mlflow==2.9.2 &&
+               mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./artifacts"
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/app
+    environment:
+      - MLFLOW_TRACKING_URI=http://localhost:5000
+
+  # FastAPI Recommendation Service
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: recommender-api
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATABASE_URL=postgresql://recommender:recommender123@postgres:5432/recommendations
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - ENVIRONMENT=development
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./models:/app/models
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    restart: unless-stopped
+
+  # Worker untuk batch processing (optional)
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: recommender-worker
+    command: python src/data/batch_processor.py
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATABASE_URL=postgresql://recommender:recommender123@postgres:5432/recommendations
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./models:/app/models
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  postgres_data:
+  mlflow_data:
+  models:
