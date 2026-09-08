@@ -133,7 +133,7 @@ class OlistETLPipeline:
     def create_popular_items(self, interactions: pl.DataFrame) -> pl.DataFrame:
         logger.info("Calculating popular items...")
 
-        popular_items = interactions.group_by("product_id").agg([
+        popular = interactions.group_by("product_id").agg([
             pl.col("order_id").count().alias("total_orders"),
             pl.col("price").sum().alias("total_revenue"),
             pl.col("price").mean().alias("avg_price")
@@ -227,4 +227,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
