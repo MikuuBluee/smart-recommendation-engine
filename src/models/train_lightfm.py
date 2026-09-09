@@ -4,7 +4,7 @@ import mlflow
 import pandas as pd
 import numpy as np
 import pickle
-from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse import coo_matrix, csr_matrix, save_npz
 from lightfm import LightFM
 from lightfm.evaluation import precision_at_k, recall_at_k
 from pathlib import Path
@@ -136,6 +136,10 @@ def main():
     try:
         interactions, item_metadata, user_id_map, item_id_map = load_and_map_data()
         interaction_matrix, item_features, categories = build_matrices(interactions, item_metadata, user_id_map, item_id_map)
+
+        save_npz(str(MODEL_PATH / "item_features.npz"), item_features)
+        logger.info(f"Item features matrix saved to {MODEL_PATH / 'item_features.npz'}")
+        
         train_and_evaluate(interaction_matrix, item_features)
     except Exception as e:
         logger.error(f"Training failed: {str(e)}")

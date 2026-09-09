@@ -1,32 +1,30 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import redis
 import json
+import time
+import os
 from typing import List
 from loguru import logger
-import time
-from src.config import (REDIS_HOST, REDIS_PORT, CACHE_CONFIG, REC_CONFIG, API_CONFIG)
+
+REDIS_HOST = os.getenv("REDIS_HOST")
+REDIS_PORT = os.getenv("REDIS_PORT")
 
 redis_client = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_client
-    redis_client = redis.Redis(
-        host=REDIS_HOST, 
-        port=REDIS_PORT, 
-        db=0, 
-        decode_responses=True
-    )
-    logger.info("Connected to Redis")
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
+    logger.info("Connected to Redis Cache")
     yield
-    redis.client.close()
+    redis_client.close()
     logger.info("Disconnected from Redis")
 
 app = FastAPI(
-    title="Smart Recommendation Engine",
-    description="Hybrid Recommendation System using LightFM",
+    title="Smart Recommendation Engine API",
+    description="Hybrid Recommendation System (LightFM) with Redis Caching",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -36,77 +34,45 @@ app.add_middleware(
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
-
-def get_popular_items() ->list[str]:
-    cached = redis_client.get("popular_items")
-    if cached:
-        return json.load(cached)
-
-    return [f"item_{i}" for i in range(REC_CONFIG["fallback_items"] + 1)]
 
 @app.get("/health")
 async def health_check():
     try:
-        redis_ping = redis_client.ping()
+        is_connected = redis_client.ping()
+        cached_users = redis_client.dbsize()
         return {
-            "status": "healty",
-            "redis": "connected" if redis_ping else "disconnected",
-            "timestamp": time.time()
+            "status": "healthy",
+            "redis": "connected" if is_connected else "disconnected",
+            "cached_recommendations": cached_users
         }
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
+        raise HTTPException(status_code=503, detail=str(e))
 
-@app.get("/recommendations/{user_id}", response_model=List[str])
+@app.get("/recommend/{user_id}", response_model=List[str])
 async def get_recommendations(user_id: str):
     start_time = time.time()
-    cache_key = f"{CACHE_CONFIG['prefix']}: {user_id}"
+    cache_key = f"recs:{user_id}"
 
     cached_recs = redis_client.get(cache_key)
 
     if cached_recs:
         latency = (time.time() - start_time) * 1000
-        logger.info(f"Cache HIT for user {user_id} | Latency: {latency:.2f} ms")
+        logger.info(f"Cache HIT for user {user_id} | Latency: {latency:.2f}ms")
         return json.loads(cached_recs)
 
-    latency =(time.time() - start_time) * 1000
-    logger.warning(f"Cache MISS for user {user_id} | Latency: {latency:.2f} ms")
+    popular_items_str = redis_client.get("popular_items")
+    popular_items = json.loads(popular_items_str) if popular_items_str else []
 
-    popular_items = get_popular_items()
-
-    redis_client.setex(
-        cache_key,
-        CACHE_CONFIG["ttl"] // 4,
-        json.dumps(popular_items)
-    )
+    latency = (time.time() - start_time) * 1000
+    logger.warning(f"Cache MISS (New User) for {user_id} | Latency: {latency:.2f}ms")
 
     return popular_items
-
-@app.post("/recommendations/batch", response_model=dict)
-async def batch_recommendations(user_ids: list[str]):
-    results = {}
-    for user_id in user_ids:
-        results[user_id] = await get_recommendations(user_id)
-
-    return {
-        "count": len(results),
-        "recommendations": results
-    }
 
 @app.get("/")
 async def root():
     return {
-        "message": "Smart Recommendation Engine API",
-        "docs": "/docs",
-        "health": "/health"
+        "message": "Smart Recommendation Engine API is running.",
+        "swaagger_docs": "/docs"
     }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "src.serving.main:app",
-        host=API_CONFIG["host"],
-        port=API_CONFIG["port"],
-        reload=API_CONFIG["reload"]
-    )
